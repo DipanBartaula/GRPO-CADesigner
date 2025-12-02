@@ -70,7 +70,7 @@ class CADGeneratorModel(nn.Module):
             lora_config = LoraConfig(
                 r=r,
                 lora_alpha=alpha,
-                target_modules=["c_attn", "c_proj"],  # For GPT-2
+                target_modules=["W_pack", "o_proj", "gate_proj", "up_proj", "down_proj"],
                 lora_dropout=dropout,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM

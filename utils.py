@@ -20,7 +20,13 @@ def xavier_init(model: nn.Module):
     return model
 
 def load_checkpoint(model, optimizer, checkpoint_dir: str, device: torch.device):
-    """Load the latest checkpoint"""
+    """Load the latest checkpoint if available, otherwise initialize model."""
+    if not os.path.exists(checkpoint_dir):
+        print(f"Checkpoint directory '{checkpoint_dir}' not found. Creating it and initializing model...")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        xavier_init(model)
+        return 0, model, optimizer
+
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith('.pt')]
     if not checkpoints:
         print("No checkpoint found. Initializing with Xavier...")
