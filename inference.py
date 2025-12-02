@@ -4,17 +4,18 @@ import os
 from typing import List, Optional
 import trimesh
 
-from model import PPOCADModel
-from utils import cad_code_to_mesh, render_mesh
+from model import PPOCADModel, SYSTEM_PROMPT, extract_script_from_text
 import matplotlib.pyplot as plt
 import numpy as np
+
+from utils import cad_code_to_mesh, render_mesh
 
 class CADInference:
     """Inference class for CAD generation"""
     def __init__(
         self,
         checkpoint_path: Optional[str] = None,
-        model_name: str = 'gpt2',
+        model_name: str = 'Qwen/Qwen2.5-Coder-7B',
         device: Optional[torch.device] = None
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,9 +58,18 @@ class CADInference:
         Returns:
             generated_codes: List of generated CAD codes
         """
+        # Build prompts with system instruction
+        full_prompts = [
+            SYSTEM_PROMPT
+            + "\nUser design description:\n"
+            + p
+            + "\n"
+            for p in prompts
+        ]
+
         # Tokenize prompts
         encodings = self.tokenizer(
-            prompts,
+            full_prompts,
             return_tensors='pt',
             padding=True,
             truncation=True,
@@ -81,13 +91,15 @@ class CADInference:
                 num_return_sequences=num_return_sequences
             )
         
-        # Decode
-        generated_codes = self.tokenizer.batch_decode(
+        # Decode and extract only the CAD script inside <script> tags
+        raw_outputs = self.tokenizer.batch_decode(
             generated_ids,
             skip_special_tokens=True
         )
-        
-        return generated_codes
+
+        scripts: List[str] = [extract_script_from_text(text) for text in raw_outputs]
+
+        return scripts
     
     def generate_and_render(
         self,

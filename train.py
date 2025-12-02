@@ -8,7 +8,7 @@ import time
 from typing import Dict, List
 import numpy as np
 
-from model import PPOCADModel, ReferenceModel
+from model import PPOCADModel, ReferenceModel, SYSTEM_PROMPT, extract_script_from_text
 from reward_models import RewardModelEnsemble
 from rewards import RewardComputer, compute_advantages
 from dataloader import create_dataloaders, save_example_data
@@ -76,10 +76,19 @@ class PPOTrainer:
                 
                 # Generate samples
                 prompts = batch['prompts']
-                
+
+                # Build prompts with system instruction
+                full_prompts = [
+                    SYSTEM_PROMPT
+                    + "\nUser design description:\n"
+                    + p
+                    + "\n"
+                    for p in prompts
+                ]
+
                 # Tokenize prompts
                 prompt_encodings = self.model.tokenizer(
-                    prompts,
+                    full_prompts,
                     return_tensors='pt',
                     padding=True,
                     truncation=True,
@@ -99,24 +108,45 @@ class PPOTrainer:
                     top_p=self.config.get('top_p', 0.95)
                 )
                 
-                # Decode generated code
-                generated_codes = self.model.tokenizer.batch_decode(
+                # Decode and extract only the CAD script inside <script> tags
+                raw_outputs = self.model.tokenizer.batch_decode(
                     generated_ids,
                     skip_special_tokens=True
                 )
+
+                scripts: List[str] = [
+                    extract_script_from_text(text) for text in raw_outputs
+                ]
                 
-                # Compute rewards
+                # Compute rewards based only on the generated scripts
                 rewards, detailed_rewards = self.reward_computer.compute_rewards(
-                    generated_codes,
+                    scripts,
                     prompts=prompts
                 )
                 
-                # Get log probs and values
-                generated_attention_mask = (generated_ids != self.model.tokenizer.pad_token_id).long()
-                log_probs, values = self.model.get_log_probs(generated_ids, generated_attention_mask)
+                # Tokenize scripts to compute log probs and values only for script tokens
+                script_encodings = self.model.tokenizer(
+                    scripts,
+                    return_tensors='pt',
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.get('max_generation_length', 512)
+                )
+
+                script_input_ids = script_encodings['input_ids'].to(self.device)
+                script_attention_mask = script_encodings['attention_mask'].to(self.device)
+
+                # Get log probs and values for scripts only
+                log_probs, values = self.model.get_log_probs(
+                    script_input_ids,
+                    script_attention_mask
+                )
                 
-                # Get reference log probs for KL penalty
-                ref_log_probs = self.reference_model.get_log_probs(generated_ids, generated_attention_mask)
+                # Get reference log probs for KL penalty (scripts only)
+                ref_log_probs = self.reference_model.get_log_probs(
+                    script_input_ids,
+                    script_attention_mask
+                )
                 
                 # Compute KL divergence
                 kl_div = (log_probs - ref_log_probs).sum(dim=1)
@@ -137,8 +167,8 @@ class PPOTrainer:
                 
                 # PPO update
                 ppo_losses = self.ppo_update(
-                    generated_ids,
-                    generated_attention_mask,
+                    script_input_ids,
+                    script_attention_mask,
                     log_probs,
                     advantages,
                     returns,
@@ -253,7 +283,7 @@ class PPOTrainer:
         with torch.no_grad():
             for batch in val_loader:
                 prompts = batch['prompts']
-                
+
                 # Tokenize prompts
                 prompt_encodings = self.model.tokenizer(
                     prompts,
@@ -273,22 +303,42 @@ class PPOTrainer:
                     max_length=512
                 )
                 
-                generated_codes = self.model.tokenizer.batch_decode(
+                raw_outputs = self.model.tokenizer.batch_decode(
                     generated_ids,
                     skip_special_tokens=True
                 )
+
+                # Extract only the CAD script inside <script> tags
+                scripts: List[str] = [
+                    extract_script_from_text(text) for text in raw_outputs
+                ]
                 
-                # Compute rewards
-                rewards, _ = self.reward_computer.compute_rewards(generated_codes, prompts)
+                # Compute rewards based on scripts only
+                rewards, _ = self.reward_computer.compute_rewards(scripts, prompts)
                 total_rewards.append(rewards.mean().item())
                 
-                # Compute metrics
-                for code in generated_codes:
+                # Compute metrics on scripts
+                for code in scripts:
                     metrics = compute_code_metrics(code)
                     code_metrics_list.append(metrics)
                 
-                # Compute perplexity
-                outputs = self.model(generated_ids, attention_mask=(generated_ids != self.model.tokenizer.pad_token_id))
+                # Compute perplexity on script tokens
+                script_encodings = self.model.tokenizer(
+                    scripts,
+                    return_tensors='pt',
+                    padding=True,
+                    truncation=True,
+                    max_length=512
+                )
+
+                script_input_ids = script_encodings['input_ids'].to(self.device)
+                script_attention_mask = script_encodings['attention_mask'].to(self.device)
+
+                outputs = self.model(
+                    script_input_ids,
+                    attention_mask=script_attention_mask,
+                    labels=script_input_ids
+                )
                 if outputs['loss'] is not None:
                     perp = torch.exp(outputs['loss']).item()
                     perplexities.append(perp)
@@ -462,7 +512,7 @@ def main():
     """Main training script"""
     # Configuration
     config = {
-        'model_name': 'gpt2',
+        'model_name': 'Qwen/Qwen2.5-Coder-7B',
         'use_lora': True,
         'lora_r': 8,
         'lora_alpha': 16,

@@ -4,6 +4,32 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Dict, Optional, Tuple
 import torch.nn.functional as F
 
+SYSTEM_PROMPT = (
+    "You are a CAD code generation assistant. "
+    "First, reason about the problem inside <think>...</think> tags. "
+    "Then, output only a valid CADQuery Python script inside <script>...</script> tags. "
+    "The script must be complete, executable CADQuery code that creates the 3D design described by the user. "
+    "Do not include any explanations, comments, or text outside these tags."
+)
+
+
+def extract_script_from_text(text: str) -> str:
+    """Extract the content inside <script>...</script> tags from a string.
+
+    Returns an empty string if the tags are missing or malformed.
+    """
+    start_tag = "<script>"
+    end_tag = "</script>"
+
+    start_idx = text.find(start_tag)
+    end_idx = text.find(end_tag, start_idx + len(start_tag)) if start_idx != -1 else -1
+
+    if start_idx == -1 or end_idx == -1:
+        return ""
+
+    return text[start_idx + len(start_tag) : end_idx].strip()
+
+
 class CADGeneratorModel(nn.Module):
     """
     CAD Code Generator Model based on pretrained language model
@@ -11,7 +37,7 @@ class CADGeneratorModel(nn.Module):
     """
     def __init__(
         self,
-        model_name: str = "gpt2",
+        model_name: str = "Qwen/Qwen2.5-Coder-7B",
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -130,7 +156,7 @@ class PPOCADModel(nn.Module):
     """PPO Model with Policy and Value heads"""
     def __init__(
         self,
-        model_name: str = "gpt2",
+        model_name: str = "Qwen/Qwen2.5-Coder-7B",
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -175,6 +201,69 @@ class PPOCADModel(nn.Module):
     def generate(self, *args, **kwargs):
         """Generate CAD code"""
         return self.generator.generate(*args, **kwargs)
+    
+    def generate_cad_script_with_log_probs(
+        self,
+        design_prompt: str,
+        max_length: int = 512,
+        temperature: float = 0.8,
+        top_k: int = 50,
+        top_p: float = 0.95
+    ) -> Tuple[str, torch.Tensor]:
+        prompt = (
+            SYSTEM_PROMPT
+            + "\nUser design description:\n"
+            + design_prompt
+            + "\n"
+        )
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(self.generator.model.device)
+        attention_mask = inputs["attention_mask"].to(self.generator.model.device)
+
+        generated_ids = self.generator.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=max_length,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+
+        full_text = self.tokenizer.decode(
+            generated_ids[0], skip_special_tokens=True
+        )
+
+        start_tag = "<script>"
+        end_tag = "</script>"
+        start_idx = full_text.find(start_tag)
+        end_idx = full_text.find(end_tag, start_idx + len(start_tag))
+
+        if start_idx == -1 or end_idx == -1:
+            script = ""
+        else:
+            script = full_text[start_idx + len(start_tag) : end_idx].strip()
+
+        script_prompt = prompt + script
+        script_inputs = self.tokenizer(script_prompt, return_tensors="pt")
+        script_input_ids = script_inputs["input_ids"].to(self.generator.model.device)
+        script_attention_mask = script_inputs["attention_mask"].to(
+            self.generator.model.device
+        )
+
+        all_log_probs, _ = self.get_log_probs(
+            script_input_ids, script_attention_mask
+        )
+
+        script_only_ids = self.tokenizer(script, return_tensors="pt")["input_ids"][
+            0
+        ]
+        script_len = script_only_ids.shape[0]
+        script_log_probs = all_log_probs[:, -script_len:]
+
+        return script, script_log_probs
     
     def get_log_probs(
         self,
@@ -224,7 +313,7 @@ class PPOCADModel(nn.Module):
 
 class ReferenceModel(nn.Module):
     """Reference model for KL penalty in PPO"""
-    def __init__(self, model_name: str = "gpt2"):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-7B"):
         super().__init__()
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
