@@ -8,33 +8,80 @@ import random
 class CADPromptDataset(Dataset):
     """
     Dataset for CAD generation prompts
+    UPDATED: Now supports JSONL format
     """
     def __init__(
         self,
         data_path: str,
         max_length: int = 512,
-        split: str = 'train'
+        split: str = 'train',
+        train_split: float = 0.9
     ):
         self.data_path = data_path
         self.max_length = max_length
         self.split = split
+        self.train_split = train_split
         
         self.prompts = self.load_prompts()
     
     def load_prompts(self) -> List[Dict]:
-        """Load prompts from file"""
+        """Load prompts from JSONL or JSON file"""
         prompts = []
         
-        # Try to load from JSON file
-        if os.path.exists(self.data_path):
-            with open(self.data_path, 'r') as f:
-                data = json.load(f)
-                prompts = data.get(self.split, [])
-        else:
-            # Generate default prompts if file doesn't exist
+        if not os.path.exists(self.data_path):
             print(f"Warning: Data file {self.data_path} not found. Using default prompts.")
-            prompts = self.generate_default_prompts()
+            return self.generate_default_prompts()
         
+        # Check file extension
+        if self.data_path.endswith('.jsonl'):
+            prompts = self.load_jsonl()
+        elif self.data_path.endswith('.json'):
+            prompts = self.load_json()
+        else:
+            raise ValueError(f"Unsupported file format: {self.data_path}. Use .json or .jsonl")
+        
+        return prompts
+    
+    def load_jsonl(self) -> List[Dict]:
+        """Load prompts from JSONL file"""
+        print(f"Loading JSONL dataset from: {self.data_path}")
+        
+        all_prompts = []
+        with open(self.data_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    all_prompts.append(data)
+                except json.JSONDecodeError as e:
+                    print(f"Warning: Skipping invalid JSON at line {line_num}: {e}")
+        
+        print(f"Loaded {len(all_prompts)} prompts from JSONL")
+        
+        # Split into train/val
+        if self.split == 'train':
+            split_idx = int(len(all_prompts) * self.train_split)
+            prompts = all_prompts[:split_idx]
+            print(f"Using {len(prompts)} prompts for training")
+        elif self.split == 'val':
+            split_idx = int(len(all_prompts) * self.train_split)
+            prompts = all_prompts[split_idx:]
+            print(f"Using {len(prompts)} prompts for validation")
+        else:
+            prompts = all_prompts
+            print(f"Using all {len(prompts)} prompts")
+        
+        return prompts
+    
+    def load_json(self) -> List[Dict]:
+        """Load prompts from JSON file (original format)"""
+        with open(self.data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            prompts = data.get(self.split, [])
+        
+        print(f"Loaded {len(prompts)} prompts from JSON ({self.split} split)")
         return prompts
     
     def generate_default_prompts(self) -> List[Dict]:
@@ -42,44 +89,24 @@ class CADPromptDataset(Dataset):
         default_prompts = [
             {
                 "prompt": "Generate a cube with side length 2.0",
-                "description": "A simple cube"
+                "difficulty": "basic"
             },
             {
                 "prompt": "Create a sphere with radius 1.5",
-                "description": "A sphere object"
+                "difficulty": "basic"
             },
             {
                 "prompt": "Generate a cylinder with radius 1.0 and height 3.0",
-                "description": "A cylindrical object"
+                "difficulty": "basic"
             },
             {
                 "prompt": "Create a cone with base radius 1.5 and height 2.5",
-                "description": "A cone shape"
+                "difficulty": "intermediate"
             },
             {
                 "prompt": "Generate a torus with major radius 2.0 and minor radius 0.5",
-                "description": "A torus object"
+                "difficulty": "intermediate"
             },
-            {
-                "prompt": "Create a rectangular box with dimensions 2x3x4",
-                "description": "A rectangular box"
-            },
-            {
-                "prompt": "Generate a pyramid with base side 2.0 and height 3.0",
-                "description": "A pyramid shape"
-            },
-            {
-                "prompt": "Create a hexagonal prism with side length 1.0 and height 2.0",
-                "description": "A hexagonal prism"
-            },
-            {
-                "prompt": "Generate a gear with 12 teeth",
-                "description": "A gear mechanism"
-            },
-            {
-                "prompt": "Create a table with 4 legs",
-                "description": "A simple table"
-            }
         ]
         
         return default_prompts
@@ -92,7 +119,7 @@ class CADPromptDataset(Dataset):
         
         return {
             'prompt': prompt_data.get('prompt', ''),
-            'description': prompt_data.get('description', ''),
+            'difficulty': prompt_data.get('difficulty', 'unknown'),
             'idx': idx
         }
 
@@ -120,7 +147,7 @@ class CADCodeDataset(Dataset):
         examples = []
         
         if os.path.exists(self.data_path):
-            with open(self.data_path, 'r') as f:
+            with open(self.data_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 examples = data.get(self.split, [])
         else:
@@ -208,12 +235,12 @@ mesh = cylinder
 def collate_prompt_batch(batch: List[Dict]) -> Dict:
     """Collate function for prompt dataset"""
     prompts = [item['prompt'] for item in batch]
-    descriptions = [item['description'] for item in batch]
+    difficulties = [item.get('difficulty', 'unknown') for item in batch]
     indices = [item['idx'] for item in batch]
     
     return {
         'prompts': prompts,
-        'descriptions': descriptions,
+        'difficulties': difficulties,
         'indices': indices
     }
 
@@ -233,39 +260,43 @@ def collate_code_batch(batch: List[Dict]) -> Dict:
 
 def create_dataloaders(
     prompt_data_path: str,
-    code_data_path: str,
+    code_data_path: Optional[str],
     tokenizer,
     batch_size: int = 4,
     num_workers: int = 2,
-    max_length: int = 512
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+    max_length: int = 512,
+    train_split: float = 0.9
+) -> tuple[DataLoader, DataLoader, Optional[DataLoader]]:
     """
     Create dataloaders for training
+    
+    Args:
+        prompt_data_path: Path to JSONL or JSON file with prompts
+        code_data_path: Path to JSON file with code examples (optional)
+        tokenizer: Tokenizer instance
+        batch_size: Batch size
+        num_workers: Number of data loading workers
+        max_length: Maximum sequence length
+        train_split: Train/val split ratio (for JSONL files)
     
     Returns:
         train_prompt_loader: DataLoader for prompts (RL training)
         val_prompt_loader: DataLoader for validation prompts
-        pretrain_loader: DataLoader for supervised pre-training
+        pretrain_loader: DataLoader for supervised pre-training (if code_data_path provided)
     """
     # Prompt datasets
     train_prompt_dataset = CADPromptDataset(
         data_path=prompt_data_path,
         max_length=max_length,
-        split='train'
+        split='train',
+        train_split=train_split
     )
     
     val_prompt_dataset = CADPromptDataset(
         data_path=prompt_data_path,
         max_length=max_length,
-        split='val'
-    )
-    
-    # Code dataset for pre-training
-    pretrain_dataset = CADCodeDataset(
-        data_path=code_data_path,
-        tokenizer=tokenizer,
-        max_length=max_length,
-        split='train'
+        split='val',
+        train_split=train_split
     )
     
     # Create dataloaders
@@ -274,7 +305,8 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_prompt_batch
+        collate_fn=collate_prompt_batch,
+        pin_memory=True
     )
     
     val_prompt_loader = DataLoader(
@@ -282,54 +314,69 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_prompt_batch
+        collate_fn=collate_prompt_batch,
+        pin_memory=True
     )
     
-    pretrain_loader = DataLoader(
-        pretrain_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        collate_fn=collate_code_batch
-    )
+    # Code dataset for pre-training (optional)
+    pretrain_loader = None
+    if code_data_path and os.path.exists(code_data_path):
+        pretrain_dataset = CADCodeDataset(
+            data_path=code_data_path,
+            tokenizer=tokenizer,
+            max_length=max_length,
+            split='train'
+        )
+        
+        pretrain_loader = DataLoader(
+            pretrain_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=collate_code_batch,
+            pin_memory=True
+        )
     
     return train_prompt_loader, val_prompt_loader, pretrain_loader
 
 
-def save_example_data(
-    prompt_path: str = "data/prompts.json",
-    code_path: str = "data/code_examples.json"
-):
-    """Save example data files"""
-    os.makedirs(os.path.dirname(prompt_path), exist_ok=True)
+def print_dataset_stats(data_path: str):
+    """Print statistics about the dataset"""
+    if not os.path.exists(data_path):
+        print(f"Dataset not found: {data_path}")
+        return
     
-    # Example prompts
-    prompt_data = {
-        "train": [
-            {"prompt": "Generate a cube with side length 2.0", "description": "A simple cube"},
-            {"prompt": "Create a sphere with radius 1.5", "description": "A sphere object"},
-            {"prompt": "Generate a cylinder with radius 1.0 and height 3.0", "description": "A cylindrical object"},
-        ] * 10,  # Repeat for more data
-        "val": [
-            {"prompt": "Create a cone with base radius 1.5 and height 2.5", "description": "A cone shape"},
-            {"prompt": "Generate a torus with major radius 2.0 and minor radius 0.5", "description": "A torus object"},
-        ] * 5
-    }
+    print("=" * 80)
+    print("DATASET STATISTICS")
+    print("=" * 80)
     
-    with open(prompt_path, 'w') as f:
-        json.dump(prompt_data, f, indent=2)
+    if data_path.endswith('.jsonl'):
+        prompts = []
+        difficulties = {}
+        
+        with open(data_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        data = json.loads(line)
+                        prompts.append(data)
+                        diff = data.get('difficulty', 'unknown')
+                        difficulties[diff] = difficulties.get(diff, 0) + 1
+                    except:
+                        pass
+        
+        print(f"Total prompts: {len(prompts)}")
+        print(f"\nDifficulty distribution:")
+        for diff, count in sorted(difficulties.items()):
+            print(f"  {diff}: {count} ({count/len(prompts)*100:.1f}%)")
+        
+        # Show sample prompts
+        print(f"\nSample prompts:")
+        for i, prompt in enumerate(prompts[:3], 1):
+            text = prompt.get('prompt', '')
+            diff = prompt.get('difficulty', 'unknown')
+            print(f"\n{i}. [{diff}]")
+            print(f"   {text[:100]}{'...' if len(text) > 100 else ''}")
     
-    # Example code
-    code_data = {
-        "train": [
-            {
-                "prompt": "Generate a cube",
-                "code": "import trimesh\nimport numpy as np\n\nvertices = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]])\nfaces = np.array([[0,1,2],[0,2,3],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[2,3,7],[2,7,6],[0,3,7],[0,7,4],[1,2,6],[1,6,5]])\nmesh = trimesh.Trimesh(vertices=vertices, faces=faces)"
-            }
-        ] * 20
-    }
-    
-    with open(code_path, 'w') as f:
-        json.dump(code_data, f, indent=2)
-    
-    print(f"Saved example data to {prompt_path} and {code_path}")
+    print("=" * 80)

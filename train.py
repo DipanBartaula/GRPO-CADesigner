@@ -372,8 +372,10 @@ def main():
         'save_interval': 500,
         'render_interval': 200,
         'checkpoint_dir': 'checkpoints',
-        'prompt_data_path': 'data/prompts.json',
-        'code_data_path': 'data/code_examples.json'
+        # UPDATED: Support for JSONL format
+        'prompt_data_path': 'cadquery_prompts.jsonl',  # or 'data/prompts.json'
+        'code_data_path': None,  # Optional
+        'train_split': 0.9  # For JSONL files
     }
     
     # Initialize wandb
@@ -382,8 +384,13 @@ def main():
         config=config
     )
     
-    # Create example data if it doesn't exist
-    save_example_data(config['prompt_data_path'], config['code_data_path'])
+    # Print dataset info
+    if os.path.exists(config['prompt_data_path']):
+        from dataloader import print_dataset_stats
+        print_dataset_stats(config['prompt_data_path'])
+    else:
+        print(f"Warning: Dataset not found at {config['prompt_data_path']}")
+        print("Using default prompts...")
     
     # Initialize models
     print("Initializing models...")
@@ -427,9 +434,10 @@ def main():
     # Create dataloaders
     train_loader, val_loader, pretrain_loader = create_dataloaders(
         prompt_data_path=config['prompt_data_path'],
-        code_data_path=config['code_data_path'],
+        code_data_path=config.get('code_data_path'),
         tokenizer=model.tokenizer,
-        batch_size=config['batch_size']
+        batch_size=config['batch_size'],
+        train_split=config.get('train_split', 0.9)
     )
     
     # Initialize trainer
