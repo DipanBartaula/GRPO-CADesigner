@@ -48,6 +48,8 @@ class CADGeneratorModel(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # Decoder-only model: use left padding for correct generation behavior
+        self.tokenizer.padding_side = "left"
         
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -231,7 +233,7 @@ class PPOCADModel(nn.Module):
         generated_ids = self.generator.model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            max_length=max_length,
+            max_new_tokens=max_length,
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
@@ -328,6 +330,8 @@ class ReferenceModel(nn.Module):
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # Ensure reference tokenizer also uses left padding
+        self.tokenizer.padding_side = "left"
         
         # Freeze reference model
         for param in self.model.parameters():
