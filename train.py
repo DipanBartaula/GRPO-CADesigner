@@ -238,7 +238,8 @@ class PPOTrainer:
         
         for _ in range(self.ppo_epochs):
             if self.use_amp:
-                with autocast(device_type="cuda", dtype=torch.float16):
+                with autocast(dtype=torch.float16):
+                    
                     # Get current log probs and values
                     current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
 
