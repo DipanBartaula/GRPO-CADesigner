@@ -415,9 +415,6 @@ class PPOTrainer:
             metrics[f'reward/{key}_cum'] = float(values_arr.sum())
     
         wandb.log(metrics)
-
-
-def main():
     """Main training script"""
     # Configuration
     config = {
@@ -441,7 +438,7 @@ def main():
         'top_p': 0.95,
         'log_interval': 1,
         'eval_interval': 200,
-        'save_interval': 500,
+        'save_interval': 200,
         'render_interval': 200,
         'checkpoint_dir': 'checkpoints',
         # UPDATED: Support for JSONL format

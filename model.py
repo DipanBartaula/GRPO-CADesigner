@@ -53,7 +53,7 @@ class CADGeneratorModel(nn.Module):
         
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
             device_map=None
         )
         
@@ -325,7 +325,11 @@ class ReferenceModel(nn.Module):
     """Reference model for KL penalty in PPO"""
     def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-7B"):
         super().__init__()
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map=None
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         if self.tokenizer.pad_token is None:
