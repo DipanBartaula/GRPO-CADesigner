@@ -198,7 +198,7 @@ class PPOTrainer:
                 
                 # Render CAD objects
                 if current_time - last_render_time >= self.render_interval:
-                    self.render_examples(generated_codes, iteration)
+                    self.render_examples(scripts, iteration)
                     last_render_time = current_time
                 
                 # Save checkpoint
