@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 import wandb
 import os
@@ -55,6 +56,10 @@ class PPOTrainer:
         
         self.checkpoint_dir = config.get('checkpoint_dir', 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+        # Mixed-precision training (only when CUDA is available)
+        self.use_amp = torch.cuda.is_available()
+        self.scaler = GradScaler(enabled=self.use_amp)
     
     def train(
         self,
@@ -232,33 +237,65 @@ class PPOTrainer:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
         for _ in range(self.ppo_epochs):
-            # Get current log probs and values
-            current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
-            
-            # Policy loss (PPO clipped objective)
-            ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
-            surr1 = ratio * advantages.detach()
-            surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
-            policy_loss = -torch.min(surr1, surr2).mean()
-            
-            # Value loss
-            value_loss = nn.MSELoss()(current_values, returns.detach())
-            
-            # Entropy loss (for exploration)
-            outputs = self.model(input_ids, attention_mask)
-            logits = outputs['logits']
-            probs = torch.softmax(logits, dim=-1)
-            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
-            entropy_loss = -entropy
-            
-            # Total loss
-            loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
-            
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+            if self.use_amp:
+                with autocast(device_type="cuda", dtype=torch.float16):
+                    # Get current log probs and values
+                    current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
+
+                    # Policy loss (PPO clipped objective)
+                    ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
+                    surr1 = ratio * advantages.detach()
+                    surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    # Value loss
+                    value_loss = nn.MSELoss()(current_values, returns.detach())
+
+                    # Entropy loss (for exploration)
+                    outputs = self.model(input_ids, attention_mask)
+                    logits = outputs['logits']
+                    probs = torch.softmax(logits, dim=-1)
+                    entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+                    entropy_loss = -entropy
+
+                    # Total loss
+                    loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+
+                # Backward with GradScaler
+                self.optimizer.zero_grad()
+                self.scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                # FP32 fallback (CPU or no AMP)
+                # Get current log probs and values
+                current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
+
+                # Policy loss (PPO clipped objective)
+                ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
+                surr1 = ratio * advantages.detach()
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
+                policy_loss = -torch.min(surr1, surr2).mean()
+
+                # Value loss
+                value_loss = nn.MSELoss()(current_values, returns.detach())
+
+                # Entropy loss (for exploration)
+                outputs = self.model(input_ids, attention_mask)
+                logits = outputs['logits']
+                probs = torch.softmax(logits, dim=-1)
+                entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
+                entropy_loss = -entropy
+
+                # Total loss
+                loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
             
             total_losses.append(loss.item())
             policy_losses.append(policy_loss.item())
@@ -283,7 +320,7 @@ class PPOTrainer:
         with torch.no_grad():
             for batch in val_loader:
                 prompts = batch['prompts']
-
+                
                 # Tokenize prompts
                 prompt_encodings = self.model.tokenizer(
                     prompts,
@@ -303,42 +340,22 @@ class PPOTrainer:
                     max_length=512
                 )
                 
-                raw_outputs = self.model.tokenizer.batch_decode(
+                generated_codes = self.model.tokenizer.batch_decode(
                     generated_ids,
                     skip_special_tokens=True
                 )
-
-                # Extract only the CAD script inside <script> tags
-                scripts: List[str] = [
-                    extract_script_from_text(text) for text in raw_outputs
-                ]
                 
-                # Compute rewards based on scripts only
-                rewards, _ = self.reward_computer.compute_rewards(scripts, prompts)
+                # Compute rewards
+                rewards, _ = self.reward_computer.compute_rewards(generated_codes, prompts)
                 total_rewards.append(rewards.mean().item())
                 
-                # Compute metrics on scripts
-                for code in scripts:
+                # Compute metrics
+                for code in generated_codes:
                     metrics = compute_code_metrics(code)
                     code_metrics_list.append(metrics)
                 
-                # Compute perplexity on script tokens
-                script_encodings = self.model.tokenizer(
-                    scripts,
-                    return_tensors='pt',
-                    padding=True,
-                    truncation=True,
-                    max_length=512
-                )
-
-                script_input_ids = script_encodings['input_ids'].to(self.device)
-                script_attention_mask = script_encodings['attention_mask'].to(self.device)
-
-                outputs = self.model(
-                    script_input_ids,
-                    attention_mask=script_attention_mask,
-                    labels=script_input_ids
-                )
+                # Compute perplexity
+                outputs = self.model(generated_ids, attention_mask=(generated_ids != self.model.tokenizer.pad_token_id))
                 if outputs['loss'] is not None:
                     perp = torch.exp(outputs['loss']).item()
                     perplexities.append(perp)
@@ -363,149 +380,40 @@ class PPOTrainer:
     
     def render_examples(self, generated_codes: List[str], iteration: int):
         """Render example CAD objects and log to wandb"""
+        for i, code in enumerate(generated_codes[:3]):  # Render first 3 examples
+            mesh = cad_code_to_mesh(code)
+            if mesh is not None:
+                log_rendered_mesh_to_wandb(mesh, iteration, name=f"example_{i}")
+    
+    def log_metrics(
+        self,
+        iteration: int,
+        ppo_losses: Dict,
+        rewards: torch.Tensor,
+        detailed_rewards: Dict,
+        kl_div: torch.Tensor
+    ):
+        """Log metrics to wandb"""
+        metrics = {
+            'iteration': iteration,
+            'loss/total': ppo_losses['total'].item(),
+            'loss/policy': ppo_losses['policy'].item(),
+            'loss/value': ppo_losses['value'].item(),
+            'loss/entropy': ppo_losses['entropy'].item(),
+            'reward/total': rewards.mean().item(),
+            'reward/std': rewards.std().item(),
+            'reward/total_cum': rewards.sum().item(),
+            'kl_divergence': kl_div.mean().item()
+        }
         
-        # Policy loss (PPO clipped objective)
-        ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
-        surr1 = ratio * advantages.detach()
-        surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
-        policy_loss = -torch.min(surr1, surr2).mean()
-        
-        # Value loss
-        value_loss = nn.MSELoss()(current_values, returns.detach())
-        
-        # Entropy loss (for exploration)
-        outputs = self.model(input_ids, attention_mask)
-        logits = outputs['logits']
-        probs = torch.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -entropy
-        
-        # Total loss
-        loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
-        
-        # Backward pass
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        
-        total_losses.append(loss.item())
-        policy_losses.append(policy_loss.item())
-        value_losses.append(value_loss.item())
-        entropy_losses.append(entropy_loss.item())
+        # Add detailed rewards
+        for key, values in detailed_rewards.items():
+            values_arr = np.array(values)
+            metrics[f'reward/{key}_mean'] = float(values_arr.mean())
+            metrics[f'reward/{key}_std'] = float(values_arr.std())
+            metrics[f'reward/{key}_cum'] = float(values_arr.sum())
     
-    return {
-        'total': torch.tensor(np.mean(total_losses)),
-        'policy': torch.tensor(np.mean(policy_losses)),
-        'value': torch.tensor(np.mean(value_losses)),
-        'entropy': torch.tensor(np.mean(entropy_losses))
-    }
-    
-def evaluate(self, val_loader: DataLoader, iteration: int):
-    """Evaluate on validation set"""
-    self.model.eval()
-    
-    total_rewards = []
-    perplexities = []
-    code_metrics_list = []
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            prompts = batch['prompts']
-            
-            # Tokenize prompts
-            prompt_encodings = self.model.tokenizer(
-                prompts,
-                return_tensors='pt',
-                padding=True,
-                truncation=True,
-                max_length=128
-            )
-            
-            input_ids = prompt_encodings['input_ids'].to(self.device)
-            attention_mask = prompt_encodings['attention_mask'].to(self.device)
-            
-            # Generate
-            generated_ids = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_length=512
-            )
-            
-            generated_codes = self.model.tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True
-            )
-            
-            # Compute rewards
-            rewards, _ = self.reward_computer.compute_rewards(generated_codes, prompts)
-            total_rewards.append(rewards.mean().item())
-            
-            # Compute metrics
-            for code in generated_codes:
-                metrics = compute_code_metrics(code)
-                code_metrics_list.append(metrics)
-            
-            # Compute perplexity
-            outputs = self.model(generated_ids, attention_mask=(generated_ids != self.model.tokenizer.pad_token_id))
-            if outputs['loss'] is not None:
-                perp = torch.exp(outputs['loss']).item()
-                perplexities.append(perp)
-    
-    # Log evaluation metrics
-    avg_reward = np.mean(total_rewards)
-    avg_perplexity = np.mean(perplexities) if perplexities else 0.0
-    
-    avg_code_metrics = {
-        key: np.mean([m[key] for m in code_metrics_list])
-        for key in code_metrics_list[0].keys()
-    }
-    
-    wandb.log({
-        'eval/reward': avg_reward,
-        'eval/perplexity': avg_perplexity,
-        **{f'eval/{k}': v for k, v in avg_code_metrics.items()},
-        'iteration': iteration
-    })
-    
-    self.model.train()
-    
-def render_examples(self, generated_codes: List[str], iteration: int):
-    """Render example CAD objects and log to wandb"""
-    for i, code in enumerate(generated_codes[:3]):  # Render first 3 examples
-        mesh = cad_code_to_mesh(code)
-        if mesh is not None:
-            log_rendered_mesh_to_wandb(mesh, iteration, name=f"example_{i}")
-    
-def log_metrics(
-    self,
-    iteration: int,
-    ppo_losses: Dict,
-    rewards: torch.Tensor,
-    detailed_rewards: Dict,
-    kl_div: torch.Tensor
-):
-    """Log metrics to wandb"""
-    metrics = {
-        'iteration': iteration,
-        'loss/total': ppo_losses['total'].item(),
-        'loss/policy': ppo_losses['policy'].item(),
-        'loss/value': ppo_losses['value'].item(),
-        'loss/entropy': ppo_losses['entropy'].item(),
-        'reward/total': rewards.mean().item(),
-        'reward/std': rewards.std().item(),
-        'reward/total_cum': rewards.sum().item(),
-        'kl_divergence': kl_div.mean().item()
-    }
-    
-    # Add detailed rewards
-    for key, values in detailed_rewards.items():
-        values_arr = np.array(values)
-        metrics[f'reward/{key}_mean'] = float(values_arr.mean())
-        metrics[f'reward/{key}_std'] = float(values_arr.std())
-        metrics[f'reward/{key}_cum'] = float(values_arr.sum())
-    
-    wandb.log(metrics)
+        wandb.log(metrics)
 
 
 def main():
@@ -514,9 +422,9 @@ def main():
     config = {
         'model_name': 'Qwen/Qwen2.5-Coder-7B',
         'use_lora': True,
-        'lora_r': 8,
+        'lora_r': 128,
         'lora_alpha': 16,
-        'batch_size': 4,
+        'batch_size': 128,
         'learning_rate': 1e-5,
         'max_iterations': 10000,
         'ppo_epochs': 4,
@@ -536,15 +444,20 @@ def main():
         'render_interval': 200,
         'checkpoint_dir': 'checkpoints',
         # UPDATED: Support for JSONL format
-        'prompt_data_path': 'cadquery_prompts.jsonl',  # or 'data/prompts.json'
+        'prompt_data_path': 'D:\GRPO-CADesigner\cadquery_prompts.jsonl',  # or 'data/prompts.json'
         'code_data_path': None,  # Optional
         'train_split': 0.9  # For JSONL files
     }
     
+
+    WANDB_API_KEY = "08a4c57edfe8bc0393a2a7f093adf84e2a3b8986"
+    WANDB_ENTITY = "078bct-anandi-tribhuvan-university-institute-of-engineering"
+
     # Initialize wandb
     wandb.init(
-        project='cad-rl-training',
-        config=config
+        project="GRPOCADesigner",
+        entity=WANDB_ENTITY,
+        config=config,
     )
     
     # Print dataset info
@@ -583,8 +496,9 @@ def main():
         device=device
     )
     
-    # Optimizer
-    optimizer = optim.AdamW(model.parameters(), lr=config['learning_rate'])
+    # Optimizer (only trainable parameters, e.g., LoRA layers)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.AdamW(trainable_params, lr=config['learning_rate'])
     
     # Load checkpoint if available
     start_iteration, model, optimizer = load_checkpoint(
