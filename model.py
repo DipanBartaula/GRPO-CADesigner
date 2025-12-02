@@ -105,7 +105,7 @@ class CADGeneratorModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        max_length: int = 512,
+        max_length: int = 32768,
         temperature: float = 0.8,
         top_k: int = 50,
         top_p: float = 0.95,
@@ -175,6 +175,14 @@ class PPOCADModel(nn.Module):
         self.value_head = ValueHead(self.generator.hidden_size)
         
         self.tokenizer = self.generator.tokenizer
+
+        # Freeze base model weights when using LoRA; only LoRA and value head remain trainable
+        for name, param in self.generator.model.named_parameters():
+            # LoRA parameters in peft models typically contain "lora_" in their names
+            param.requires_grad = ("lora_" in name)
+
+        for param in self.value_head.parameters():
+            param.requires_grad = True
     
     def forward(
         self,
@@ -205,7 +213,7 @@ class PPOCADModel(nn.Module):
     def generate_cad_script_with_log_probs(
         self,
         design_prompt: str,
-        max_length: int = 512,
+        max_length: int = 32768,
         temperature: float = 0.8,
         top_k: int = 50,
         top_p: float = 0.95

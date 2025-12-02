@@ -388,16 +388,23 @@ class RewardModelEnsemble(nn.Module):
         
         for name, model in self.models.items():
             try:
+                model_dtype = next(model.parameters()).dtype
+
                 if name == 'pointbert' and 'point_cloud' in inputs:
-                    rewards[name] = model(inputs['point_cloud'])
+                    rewards[name] = model(inputs['point_cloud'].to(dtype=model_dtype))
                 elif name == 'ulip2' and 'point_cloud' in inputs:
-                    rewards[name] = model(inputs['point_cloud'], inputs.get('text_embeddings'))
+                    text_emb = inputs.get('text_embeddings')
+                    rewards[name] = model(
+                        inputs['point_cloud'].to(dtype=model_dtype),
+                        text_emb.to(dtype=model_dtype) if text_emb is not None else None,
+                    )
                 elif name == 'multiview_clip' and 'rendered_views' in inputs:
+                    # CLIP handles its own dtype internally
                     rewards[name] = model(inputs['rendered_views'])
                 elif name == 'pointclip' and 'point_cloud' in inputs:
-                    rewards[name] = model(inputs['point_cloud'])
+                    rewards[name] = model(inputs['point_cloud'].to(dtype=model_dtype))
                 elif name == 'geometric' and 'geometric_features' in inputs:
-                    rewards[name] = model(inputs['geometric_features'])
+                    rewards[name] = model(inputs['geometric_features'].to(dtype=model_dtype))
             except Exception as e:
                 print(f"Error in {name} reward model: {e}")
                 rewards[name] = torch.zeros(1, device=next(model.parameters()).device)

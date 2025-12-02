@@ -107,7 +107,7 @@ class PPOTrainer:
                 generated_ids = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    max_length=self.config.get('max_generation_length', 512),
+                    max_length=self.config.get('max_generation_length', 32768),
                     temperature=self.config.get('temperature', 0.8),
                     top_k=self.config.get('top_k', 50),
                     top_p=self.config.get('top_p', 0.95)
@@ -135,7 +135,7 @@ class PPOTrainer:
                     return_tensors='pt',
                     padding=True,
                     truncation=True,
-                    max_length=self.config.get('max_generation_length', 512)
+                    max_length=self.config.get('max_generation_length', 32768)
                 )
 
                 script_input_ids = script_encodings['input_ids'].to(self.device)
@@ -338,7 +338,7 @@ class PPOTrainer:
                 generated_ids = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    max_length=512
+                    max_length=self.config.get('max_generation_length', 32768)
                 )
                 
                 generated_codes = self.model.tokenizer.batch_decode(
@@ -435,7 +435,7 @@ def main():
         'kl_coef': 0.1,
         'gamma': 0.99,
         'lam': 0.95,
-        'max_generation_length': 512,
+        'max_generation_length': 32768,
         'temperature': 0.8,
         'top_k': 50,
         'top_p': 0.95,
@@ -492,6 +492,10 @@ def main():
             'geometric': 0.2
         }
     ).to(device)
+
+    # Reward models are inference-only: use fp16 on GPU to reduce VRAM
+    if device.type == "cuda":
+        reward_models = reward_models.half()
     
     reward_computer = RewardComputer(
         reward_models=reward_models,
