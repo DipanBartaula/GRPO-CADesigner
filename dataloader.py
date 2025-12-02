@@ -267,23 +267,6 @@ def create_dataloaders(
     max_length: int = 512,
     train_split: float = 0.9
 ) -> tuple[DataLoader, DataLoader, Optional[DataLoader]]:
-    """
-    Create dataloaders for training
-    
-    Args:
-        prompt_data_path: Path to JSONL or JSON file with prompts
-        code_data_path: Path to JSON file with code examples (optional)
-        tokenizer: Tokenizer instance
-        batch_size: Batch size
-        num_workers: Number of data loading workers
-        max_length: Maximum sequence length
-        train_split: Train/val split ratio (for JSONL files)
-    
-    Returns:
-        train_prompt_loader: DataLoader for prompts (RL training)
-        val_prompt_loader: DataLoader for validation prompts
-        pretrain_loader: DataLoader for supervised pre-training (if code_data_path provided)
-    """
     # Prompt datasets
     train_prompt_dataset = CADPromptDataset(
         data_path=prompt_data_path,
@@ -338,6 +321,66 @@ def create_dataloaders(
         )
     
     return train_prompt_loader, val_prompt_loader, pretrain_loader
+
+
+def save_example_data(base_dir: str = 'data'):
+    """Save example prompt and code datasets for testing."""
+    os.makedirs(base_dir, exist_ok=True)
+
+    # Example prompts in JSON format (with train/val splits)
+    prompts = [
+        {
+            "prompt": "Generate a cube with side length 2.0",
+            "difficulty": "basic",
+        },
+        {
+            "prompt": "Create a sphere with radius 1.5",
+            "difficulty": "basic",
+        },
+        {
+            "prompt": "Generate a cylinder with radius 1.0 and height 3.0",
+            "difficulty": "basic",
+        },
+        {
+            "prompt": "Create a cone with base radius 1.5 and height 2.5",
+            "difficulty": "intermediate",
+        },
+        {
+            "prompt": "Generate a torus with major radius 2.0 and minor radius 0.5",
+            "difficulty": "intermediate",
+        },
+    ]
+
+    prompts_path = os.path.join(base_dir, 'prompts.json')
+    prompts_data = {
+        'train': prompts,
+        'val': prompts,
+    }
+    with open(prompts_path, 'w', encoding='utf-8') as f:
+        json.dump(prompts_data, f, indent=2, ensure_ascii=False)
+
+    # Example CAD code dataset in JSON format (train split only)
+    code_examples = [
+        {
+            "prompt": "Generate a cube",
+            "code": """import trimesh\nimport numpy as np\n\n# Create a cube\nvertices = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])\nfaces = np.array([[0, 1, 2], [0, 2, 3],[4, 5, 6], [4, 6, 7],[0, 1, 5], [0, 5, 4],[2, 3, 7], [2, 7, 6],[0, 3, 7], [0, 7, 4],[1, 2, 6], [1, 6, 5]])\nmesh = trimesh.Trimesh(vertices=vertices, faces=faces)""",
+        },
+        {
+            "prompt": "Create a sphere",
+            "code": """import trimesh\n\n# Create a sphere\nsphere = trimesh.creation.icosphere(subdivisions=3, radius=1.0)\nmesh = sphere""",
+        },
+        {
+            "prompt": "Generate a cylinder",
+            "code": """import trimesh\n\n# Create a cylinder\ncylinder = trimesh.creation.cylinder(radius=1.0, height=2.0, sections=32)\nmesh = cylinder""",
+        },
+    ]
+
+    code_examples_path = os.path.join(base_dir, 'code_examples.json')
+    code_data = {
+        'train': code_examples,
+    }
+    with open(code_examples_path, 'w', encoding='utf-8') as f:
+        json.dump(code_data, f, indent=2, ensure_ascii=False)
 
 
 def print_dataset_stats(data_path: str):

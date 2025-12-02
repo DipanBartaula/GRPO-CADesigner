@@ -454,6 +454,7 @@ def main():
     WANDB_ENTITY = "078bct-anandi-tribhuvan-university-institute-of-engineering"
 
     # Initialize wandb
+    wandb.login(key=WANDB_API_KEY)
     wandb.init(
         project="GRPOCADesigner",
         entity=WANDB_ENTITY,
