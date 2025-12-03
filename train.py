@@ -145,16 +145,54 @@ class PPOTrainer:
                     skip_special_tokens=True
                 )
 
+                # Debug: Print raw output info
+                print(f"\n{'='*50}")
+                print(f"RAW OUTPUT DEBUG INFO")
+                print(f"{'='*50}")
+                for idx, raw_out in enumerate(raw_outputs):
+                    print(f"  Raw output [{idx}]: length={len(raw_out)} chars")
+                    print(f"    First 300 chars: {raw_out[:300]}...")
+                    print(f"    Last 200 chars: ...{raw_out[-200:]}")
+                    has_script_open = '<script>' in raw_out
+                    has_script_close = '</script>' in raw_out
+                    print(f"    Contains <script> tag: {has_script_open}")
+                    print(f"    Contains </script> tag: {has_script_close}")
+
                 scripts: List[str] = [
                     extract_script_from_text(text) for text in raw_outputs
                 ]
                 
-                print(f"Extracted {len(scripts)} scripts")
+                # Debug: Print each script's length and status
+                print(f"\n{'='*50}")
+                print(f"EXTRACTED SCRIPTS DEBUG INFO")
+                print(f"{'='*50}")
+                print(f"Total scripts extracted: {len(scripts)}")
+                for idx, script in enumerate(scripts):
+                    script_len = len(script) if script else 0
+                    is_empty = not script or not script.strip()
+                    has_import = 'import' in script.lower() if script else False
+                    has_cadquery = 'cadquery' in script.lower() if script else False
+                    print(f"  Script [{idx}]:")
+                    print(f"    Length: {script_len} chars")
+                    print(f"    Is empty: {is_empty}")
+                    print(f"    Has 'import': {has_import}")
+                    print(f"    Has 'cadquery': {has_cadquery}")
+                    if script and script.strip():
+                        print(f"    Preview (first 200 chars): {script[:200]}...")
+                    else:
+                        print(f"    Preview: <EMPTY SCRIPT>")
+                
                 valid_scripts = [s for s in scripts if s.strip()]
-                print(f"Valid scripts: {len(valid_scripts)}/{len(scripts)}")
+                empty_scripts = [s for s in scripts if not s.strip()]
+                print(f"\nSUMMARY:")
+                print(f"  Valid (non-empty) scripts: {len(valid_scripts)}/{len(scripts)}")
+                print(f"  Empty scripts: {len(empty_scripts)}/{len(scripts)}")
                 if valid_scripts:
-                    print(f"Sample script length: {len(valid_scripts[0])} chars")
-                    print(f"Sample script preview: {valid_scripts[0][:200]}...")
+                    avg_len = sum(len(s) for s in valid_scripts) / len(valid_scripts)
+                    print(f"  Average valid script length: {avg_len:.1f} chars")
+                    print(f"  Min script length: {min(len(s) for s in valid_scripts)} chars")
+                    print(f"  Max script length: {max(len(s) for s in valid_scripts)} chars")
+                print(f"{'='*50}\n")
                 
                 # Compute rewards based only on the generated scripts
                 print(f"Computing rewards for {len(scripts)} scripts...")
@@ -213,10 +251,25 @@ class PPOTrainer:
                 adjusted_rewards = rewards - self.kl_coef * kl_div
                 print(f"Adjusted rewards stats - Mean: {adjusted_rewards.mean():.4f}, Std: {adjusted_rewards.std():.4f}")
                 
+                # Debug: Check if rewards have variance
+                print(f"\n{'='*50}")
+                print(f"PRE-NORMALIZATION DEBUG")
+                print(f"{'='*50}")
+                print(f"Adjusted rewards (raw): {adjusted_rewards}")
+                rewards_std = adjusted_rewards.std().item()
+                if rewards_std < 1e-6:
+                    print(f"⚠️ WARNING: Rewards have near-zero variance ({rewards_std:.8f})!")
+                    print(f"   This means ALL scripts got nearly identical rewards.")
+                    print(f"   PPO will have no learning signal (advantages will be ~0).")
+                
                 # Normalize rewards
                 adjusted_rewards = self.reward_computer.normalize_rewards(adjusted_rewards)
+                print(f"Normalized rewards: {adjusted_rewards}")
                 
                 # Compute advantages
+                print(f"\n{'='*50}")
+                print(f"ADVANTAGE COMPUTATION DEBUG")
+                print(f"{'='*50}")
                 print(f"Computing advantages with gamma={self.gamma}, lam={self.lam}...")
                 advantages, returns = compute_advantages(
                     adjusted_rewards,
@@ -225,8 +278,22 @@ class PPOTrainer:
                     lam=self.lam
                 )
                 print(f"Advantages shape: {advantages.shape}, Returns shape: {returns.shape}")
+                print(f"Advantages (raw): {advantages}")
+                print(f"Returns (raw): {returns}")
                 print(f"Advantages stats - Mean: {advantages.mean():.4f}, Std: {advantages.std():.4f}")
                 print(f"Returns stats - Mean: {returns.mean():.4f}, Std: {returns.std():.4f}")
+                
+                adv_std = advantages.std().item()
+                if adv_std < 1e-6:
+                    print(f"⚠️ WARNING: Advantages have near-zero variance ({adv_std:.8f})!")
+                    print(f"   PPO policy gradient will be ~0, model won't learn.")
+                
+                # Check for NaN/Inf in advantages
+                if torch.isnan(advantages).any() or torch.isinf(advantages).any():
+                    print(f"🚨 CRITICAL: NaN or Inf detected in advantages!")
+                    print(f"   NaN count: {torch.isnan(advantages).sum().item()}")
+                    print(f"   Inf count: {torch.isinf(advantages).sum().item()}")
+                print(f"{'='*50}\\n")
                 
                 # PPO update
                 print(f"Starting PPO update with {self.ppo_epochs} epochs...")
