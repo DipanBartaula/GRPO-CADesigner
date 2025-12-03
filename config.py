@@ -9,8 +9,10 @@ import os
 # ============================================================================
 
 MODEL_CONFIG = {
-    # Base model to use (gpt2, gpt2-medium, microsoft/CodeGPT-small-py, etc.)
-    'model_name': 'gpt2',
+    # Base model to use
+    # Options: 'Qwen/Qwen2.5-Coder-0.5B' (smallest), 'Qwen/Qwen2.5-Coder-1.5B' (small), 
+    #          'Qwen/Qwen2.5-Coder-3B' (medium), 'Qwen/Qwen2.5-Coder-7B' (large)
+    'model_name': 'Qwen/Qwen2.5-Coder-1.5B',  # Using 1.5B to avoid CUDA OOM
     
     # LoRA configuration
     'use_lora': True,
@@ -23,6 +25,12 @@ MODEL_CONFIG = {
     'temperature': 0.8,
     'top_k': 50,
     'top_p': 0.95,
+    
+    # Memory optimization
+    'use_flash_attention': True,      # Use Flash Attention 2 if available
+    'gradient_checkpointing': True,   # Trade compute for memory
+    'load_in_8bit': False,            # Set True for even more memory savings
+    'load_in_4bit': False,            # Set True for maximum memory savings (slower)
 }
 
 # ============================================================================
