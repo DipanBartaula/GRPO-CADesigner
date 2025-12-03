@@ -72,15 +72,30 @@ class PPOTrainer:
         last_eval_time = time.time()
         last_render_time = time.time()
         
-        print(f"Starting training from iteration {iteration}")
+        print(f"\n{'='*60}")
+        print(f"STARTING TRAINING FROM ITERATION {iteration}")
+        print(f"{'='*60}")
+        print(f"Device: {self.device}")
+        print(f"Using AMP: {self.use_amp}")
+        print(f"Batch size: {self.config.get('batch_size', 'unknown')}")
+        print(f"Max iterations: {self.max_iterations}")
+        print(f"Learning rate: {self.config.get('learning_rate', 'unknown')}")
+        print(f"PPO epochs: {self.ppo_epochs}")
+        print(f"Clip epsilon: {self.clip_epsilon}")
+        print(f"{'='*60}\n")
         
         while iteration < self.max_iterations:
-            for batch in train_loader:
+            iteration_start_time = time.time()
+            print(f"\n--- ITERATION {iteration} ---")
+            for batch_idx, batch in enumerate(train_loader):
                 if iteration >= self.max_iterations:
                     break
                 
+                print(f"Batch {batch_idx}: Processing {len(batch['prompts'])} prompts")
+                
                 # Generate samples
                 prompts = batch['prompts']
+                print(f"Sample prompt: '{prompts[0][:100]}...'" if prompts else "No prompts found")
 
                 # Build prompts with system instruction
                 full_prompts = [
@@ -92,6 +107,7 @@ class PPOTrainer:
                 ]
 
                 # Tokenize prompts
+                print(f"Tokenizing prompts...")
                 prompt_encodings = self.model.tokenizer(
                     full_prompts,
                     return_tensors='pt',
@@ -102,8 +118,12 @@ class PPOTrainer:
                 
                 input_ids = prompt_encodings['input_ids'].to(self.device)
                 attention_mask = prompt_encodings['attention_mask'].to(self.device)
+                print(f"Input IDs shape: {input_ids.shape}")
+                print(f"Attention mask shape: {attention_mask.shape}")
                 
                 # Generate CAD code
+                print(f"Generating CAD code with max_length={self.config.get('max_generation_length', 32768)}...")
+                gen_start_time = time.time()
                 generated_ids = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -112,6 +132,9 @@ class PPOTrainer:
                     top_k=self.config.get('top_k', 50),
                     top_p=self.config.get('top_p', 0.95)
                 )
+                gen_time = time.time() - gen_start_time
+                print(f"Generation completed in {gen_time:.2f}s")
+                print(f"Generated IDs shape: {generated_ids.shape}")
                 
                 # Decode and extract only the CAD script inside <script> tags
                 raw_outputs = self.model.tokenizer.batch_decode(
@@ -123,11 +146,30 @@ class PPOTrainer:
                     extract_script_from_text(text) for text in raw_outputs
                 ]
                 
+                print(f"Extracted {len(scripts)} scripts")
+                valid_scripts = [s for s in scripts if s.strip()]
+                print(f"Valid scripts: {len(valid_scripts)}/{len(scripts)}")
+                if valid_scripts:
+                    print(f"Sample script length: {len(valid_scripts[0])} chars")
+                    print(f"Sample script preview: {valid_scripts[0][:200]}...")
+                
                 # Compute rewards based only on the generated scripts
+                print(f"Computing rewards for {len(scripts)} scripts...")
+                reward_start_time = time.time()
                 rewards, detailed_rewards = self.reward_computer.compute_rewards(
                     scripts,
                     prompts=prompts
                 )
+                reward_time = time.time() - reward_start_time
+                print(f"Reward computation completed in {reward_time:.2f}s")
+                print(f"Rewards shape: {rewards.shape}")
+                print(f"Reward stats - Mean: {rewards.mean():.4f}, Std: {rewards.std():.4f}, Min: {rewards.min():.4f}, Max: {rewards.max():.4f}")
+                
+                # Print detailed rewards
+                for key, values in detailed_rewards.items():
+                    if values and len(values) > 0:
+                        values_arr = torch.tensor(values) if isinstance(values[0], (int, float)) else values
+                        print(f"  {key}: Mean={values_arr.mean():.4f}, Std={values_arr.std():.4f}")
                 
                 # Tokenize scripts to compute log probs and values only for script tokens
                 script_encodings = self.model.tokenizer(
@@ -142,10 +184,15 @@ class PPOTrainer:
                 script_attention_mask = script_encodings['attention_mask'].to(self.device)
 
                 # Get log probs and values for scripts only
+                print(f"Computing log probabilities and values...")
                 log_probs, values = self.model.get_log_probs(
                     script_input_ids,
                     script_attention_mask
                 )
+                print(f"Log probs shape: {log_probs.shape}")
+                print(f"Values shape: {values.shape}")
+                print(f"Log probs stats - Mean: {log_probs.mean():.4f}, Std: {log_probs.std():.4f}")
+                print(f"Values stats - Mean: {values.mean():.4f}, Std: {values.std():.4f}")
                 
                 # Get reference log probs for KL penalty (scripts only)
                 ref_log_probs = self.reference_model.get_log_probs(
@@ -154,23 +201,33 @@ class PPOTrainer:
                 )
                 
                 # Compute KL divergence
+                print(f"Computing KL divergence...")
                 kl_div = (log_probs - ref_log_probs).sum(dim=1)
+                print(f"KL divergence shape: {kl_div.shape}")
+                print(f"KL divergence stats - Mean: {kl_div.mean():.4f}, Std: {kl_div.std():.4f}")
                 
                 # Adjust rewards with KL penalty
                 adjusted_rewards = rewards - self.kl_coef * kl_div
+                print(f"Adjusted rewards stats - Mean: {adjusted_rewards.mean():.4f}, Std: {adjusted_rewards.std():.4f}")
                 
                 # Normalize rewards
                 adjusted_rewards = self.reward_computer.normalize_rewards(adjusted_rewards)
                 
                 # Compute advantages
+                print(f"Computing advantages with gamma={self.gamma}, lam={self.lam}...")
                 advantages, returns = compute_advantages(
                     adjusted_rewards,
                     values,
                     gamma=self.gamma,
                     lam=self.lam
                 )
+                print(f"Advantages shape: {advantages.shape}, Returns shape: {returns.shape}")
+                print(f"Advantages stats - Mean: {advantages.mean():.4f}, Std: {advantages.std():.4f}")
+                print(f"Returns stats - Mean: {returns.mean():.4f}, Std: {returns.std():.4f}")
                 
                 # PPO update
+                print(f"Starting PPO update with {self.ppo_epochs} epochs...")
+                ppo_start_time = time.time()
                 ppo_losses = self.ppo_update(
                     script_input_ids,
                     script_attention_mask,
@@ -179,6 +236,9 @@ class PPOTrainer:
                     returns,
                     values
                 )
+                ppo_time = time.time() - ppo_start_time
+                print(f"PPO update completed in {ppo_time:.2f}s")
+                print(f"PPO Losses - Total: {ppo_losses['total']:.4f}, Policy: {ppo_losses['policy']:.4f}, Value: {ppo_losses['value']:.4f}, Entropy: {ppo_losses['entropy']:.4f}")
                 
                 # Log to wandb
                 if iteration % self.log_interval == 0:
@@ -215,6 +275,8 @@ class PPOTrainer:
                         metrics
                     )
                 
+                print(f"Iteration {iteration} completed successfully")
+                print(f"Total iteration time: {time.time() - iteration_start_time:.2f}s")
                 iteration += 1
         
         print("Training completed!")
@@ -229,28 +291,43 @@ class PPOTrainer:
         old_values: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """Perform PPO update"""
+        print(f"\n  PPO UPDATE START")
+        print(f"  Input shapes - IDs: {input_ids.shape}, Mask: {attention_mask.shape}")
+        print(f"  Old log probs shape: {old_log_probs.shape}")
+        print(f"  Advantages shape: {advantages.shape}, Returns shape: {returns.shape}")
+        print(f"  Old values shape: {old_values.shape}")
+        
         total_losses = []
         policy_losses = []
         value_losses = []
         entropy_losses = []
         
+        # Normalize advantages
+        advantages_mean = advantages.mean()
+        advantages_std = advantages.std()
+        print(f"  Advantages before normalization - Mean: {advantages_mean:.4f}, Std: {advantages_std:.4f}")
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        print(f"  Advantages after normalization - Mean: {advantages.mean():.4f}, Std: {advantages.std():.4f}")
         
-        for _ in range(self.ppo_epochs):
+        for epoch_idx in range(self.ppo_epochs):
+            print(f"  PPO Epoch {epoch_idx + 1}/{self.ppo_epochs}")
             if self.use_amp:
                 with autocast(dtype=torch.float16):
                     
                     # Get current log probs and values
                     current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
+                    print(f"    Current log probs shape: {current_log_probs.shape}, Current values shape: {current_values.shape}")
 
                     # Policy loss (PPO clipped objective)
                     ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
                     surr1 = ratio * advantages.detach()
                     surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
                     policy_loss = -torch.min(surr1, surr2).mean()
+                    print(f"    Policy loss: {policy_loss.item():.4f}")
 
                     # Value loss
                     value_loss = nn.MSELoss()(current_values, returns.detach())
+                    print(f"    Value loss: {value_loss.item():.4f}")
 
                     # Entropy loss (for exploration)
                     outputs = self.model(input_ids, attention_mask)
@@ -258,29 +335,45 @@ class PPOTrainer:
                     probs = torch.softmax(logits, dim=-1)
                     entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
                     entropy_loss = -entropy
+                    print(f"    Entropy loss: {entropy_loss.item():.4f}")
 
                     # Total loss
                     loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+                    print(f"    Total loss: {loss.item():.4f}")
 
                 # Backward with GradScaler
                 self.optimizer.zero_grad()
                 self.scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                
+                # Unscale gradients before clipping
+                self.scaler.unscale_(self.optimizer)
+                
+                # Check for NaN/Inf gradients before clipping and stepping
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                print(f"    Gradient norm: {grad_norm:.4f}")
+                if torch.isfinite(grad_norm):
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    print(f"    Optimizer step successful")
+                else:
+                    print(f"    Warning: NaN/Inf gradients detected, skipping optimizer step")
+                    self.scaler.update()
             else:
                 # FP32 fallback (CPU or no AMP)
                 # Get current log probs and values
                 current_log_probs, current_values = self.model.get_log_probs(input_ids, attention_mask)
+                print(f"    Current log probs shape: {current_log_probs.shape}, Current values shape: {current_values.shape}")
 
                 # Policy loss (PPO clipped objective)
                 ratio = torch.exp(current_log_probs.sum(dim=1) - old_log_probs.sum(dim=1).detach())
                 surr1 = ratio * advantages.detach()
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages.detach()
                 policy_loss = -torch.min(surr1, surr2).mean()
+                print(f"    Policy loss: {policy_loss.item():.4f}")
 
                 # Value loss
                 value_loss = nn.MSELoss()(current_values, returns.detach())
+                print(f"    Value loss: {value_loss.item():.4f}")
 
                 # Entropy loss (for exploration)
                 outputs = self.model(input_ids, attention_mask)
@@ -288,9 +381,11 @@ class PPOTrainer:
                 probs = torch.softmax(logits, dim=-1)
                 entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).mean()
                 entropy_loss = -entropy
+                print(f"    Entropy loss: {entropy_loss.item():.4f}")
 
                 # Total loss
                 loss = policy_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+                print(f"    Total loss: {loss.item():.4f}")
 
                 # Backward pass
                 self.optimizer.zero_grad()
@@ -302,13 +397,16 @@ class PPOTrainer:
             policy_losses.append(policy_loss.item())
             value_losses.append(value_loss.item())
             entropy_losses.append(entropy_loss.item())
+            print(f"    Epoch {epoch_idx + 1} losses - Total: {loss.item():.4f}, Policy: {policy_loss.item():.4f}, Value: {value_loss.item():.4f}, Entropy: {entropy_loss.item():.4f}")
         
-        return {
+        avg_losses = {
             'total': torch.tensor(np.mean(total_losses)),
             'policy': torch.tensor(np.mean(policy_losses)),
             'value': torch.tensor(np.mean(value_losses)),
             'entropy': torch.tensor(np.mean(entropy_losses))
         }
+        print(f"  PPO UPDATE COMPLETE - Avg losses: {avg_losses}")
+        return avg_losses
     
     def evaluate(self, val_loader: DataLoader, iteration: int):
         """Evaluate on validation set"""
