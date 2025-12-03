@@ -79,7 +79,7 @@ class PPOTrainer:
         print(f"Device: {self.device}")
         print(f"Using AMP: {self.use_amp}")
         print(f"Main models (Qwen): FP32")
-        print(f"Reward models: FP16")
+        print(f"Reward system: Compilation & Execution Only")
         print(f"Batch size: {self.config.get('batch_size', 'unknown')}")
         print(f"Max iterations: {self.max_iterations}")
         print(f"Learning rate: {self.config.get('learning_rate', 'unknown')}")
@@ -579,25 +579,18 @@ class PPOTrainer:
     
     reference_model = ReferenceModel(model_name=config['model_name'])
     
-    # Initialize reward models
+    # Initialize reward models - COMPILATION & EXECUTION ONLY
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    reward_models = RewardModelEnsemble(
-        weights={
-            'pointbert': 0.2,
-            'ulip2': 0.2,
-            'multiview_clip': 0.2,
-            'pointclip': 0.2,
-            'geometric': 0.2
-        }
-    ).to(device)
-
-    # Reward models are inference-only: use fp16 on GPU to reduce VRAM
-    if device.type == "cuda":
-        reward_models = reward_models.half()
+    print(f"Initializing compilation/execution-only reward system on {device}")
     
+    # Create a simple reward computer that only uses code compilation and execution
     reward_computer = RewardComputer(
-        reward_models=reward_models,
-        device=device
+        reward_models=None,  # No neural reward models
+        device=device,
+        use_compilation_reward=True,   # Enable compilation checking
+        use_execution_reward=True,     # Enable execution testing
+        compilation_weight=0.5,        # Weight for successful compilation
+        execution_weight=0.5          # Weight for successful execution
     )
     
     # Optimizer (only trainable parameters, e.g., LoRA layers)
