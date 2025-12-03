@@ -17,7 +17,7 @@ def test_model_initialization():
     try:
         # Test PPO model without LoRA
         print("\nInitializing PPO model (no LoRA)...")
-        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B", use_lora=False)
+        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", use_lora=False)
         
         print(f"✓ PPO model initialized")
         print(f"  - Vocab size: {model.generator.vocab_size}")
@@ -30,7 +30,7 @@ def test_model_initialization():
         # Test PPO model with LoRA
         print("\nInitializing PPO model (with LoRA)...")
         model_lora = PPOCADModel(
-            model_name="Qwen/Qwen2.5-Coder-1.5B",
+            model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct",
             use_lora=True,
             lora_r=8,
             lora_alpha=16
@@ -44,7 +44,7 @@ def test_model_initialization():
         
         # Test reference model
         print("\nInitializing reference model...")
-        ref_model = ReferenceModel(model_name="Qwen/Qwen2.5-Coder-1.5B")
+        ref_model = ReferenceModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct")
         
         print(f"✓ Reference model initialized")
         print(f"  - All parameters frozen: {all(not p.requires_grad for p in ref_model.parameters())}")
@@ -75,7 +75,7 @@ def test_forward_pass():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
         
-        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B", use_lora=False).to(device)
+        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", use_lora=False).to(device)
         
         # Create dummy input
         batch_size = 2
@@ -117,7 +117,7 @@ def test_generation():
     
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B", use_lora=False).to(device)
+        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", use_lora=False).to(device)
         
         # Test prompts
         prompts = [
@@ -192,7 +192,7 @@ def test_log_probs():
     
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B", use_lora=False).to(device)
+        model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", use_lora=False).to(device)
         
         batch_size = 2
         seq_len = 15
@@ -233,8 +233,8 @@ def test_reference_model():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Initialize models
-        policy_model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B", use_lora=False).to(device)
-        ref_model = ReferenceModel(model_name="Qwen/Qwen2.5-Coder-1.5B").to(device)
+        policy_model = PPOCADModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", use_lora=False).to(device)
+        ref_model = ReferenceModel(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct").to(device)
         
         batch_size = 2
         seq_len = 15

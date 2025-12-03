@@ -3,20 +3,151 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Dict, Optional, Tuple
 import torch.nn.functional as F
+import re
+import os
 
-SYSTEM_PROMPT = (
-    "You are a CAD code generation assistant. "
-    "First, reason about the problem inside <think>...</think> tags. "
-    "Then, output only a valid CADQuery Python script inside <script>...</script> tags. "
-    "The script must be complete, executable CADQuery code that creates the 3D design described by the user. "
-    "Do not include any explanations, comments, or text outside these tags."
-)
+# Comprehensive system prompt - generates ONLY code inside <script> tags
+SYSTEM_PROMPT = '''You are a CadQuery Python code generator. Generate ONLY executable Python code.
+
+OUTPUT FORMAT - You must output EXACTLY this format:
+<script>
+import cadquery as cq
+[your code here]
+result = [final CadQuery object]
+</script>
+
+ABSOLUTE RULES:
+1. Output ONLY the <script> tags with Python code inside - NOTHING ELSE
+2. NO thinking, NO explanations, NO comments outside code
+3. NO markdown formatting (no ```, no #headers, no **bold**)
+4. NO box-drawing characters (─│┌┐└┘├┤┬┴┼)
+5. NO tables, diagrams, ASCII art, or decorations
+6. NO text before <script> or after </script>
+7. Code MUST be syntactically valid Python
+8. Code MUST start with: import cadquery as cq
+9. Code MUST end with result variable containing the 3D object
+
+CADQUERY REFERENCE:
+
+Basic Shapes:
+  cq.Workplane("XY").box(length, width, height)     # Rectangular box
+  cq.Workplane("XY").cylinder(height, radius)       # Cylinder
+  cq.Workplane("XY").sphere(radius)                 # Sphere
+  cq.Workplane("XY").cone(height, r1, r2)           # Cone/truncated cone
+
+2D to 3D Operations:
+  .rect(width, height).extrude(depth)               # Extruded rectangle
+  .circle(radius).extrude(depth)                    # Extruded circle
+  .polygon(n_sides, radius).extrude(depth)          # Extruded polygon
+  .ellipse(x_radius, y_radius).extrude(depth)       # Extruded ellipse
+  .rect(w, h).revolve(angle)                        # Revolved rectangle
+
+Modifications:
+  .faces(">Z").hole(diameter, depth)                # Hole through face
+  .edges().fillet(radius)                           # Round edges
+  .edges().chamfer(length)                          # Bevel edges
+  .shell(thickness)                                 # Hollow out solid
+
+Boolean Operations:
+  .cut(other_shape)                                 # Subtract shape
+  .union(other_shape)                               # Add shape
+  .intersect(other_shape)                           # Intersection
+
+Positioning:
+  .translate((x, y, z))                             # Move object
+  .rotate((0,0,0), (0,0,1), angle)                  # Rotate object
+  .mirror("XY")                                     # Mirror object
+
+Face Selection:
+  .faces(">Z")   # Top face       .faces("<Z")   # Bottom face
+  .faces(">X")   # Right face     .faces("<X")   # Left face
+  .faces(">Y")   # Front face     .faces("<Y")   # Back face
+
+EXAMPLES:
+
+Example 1 - Simple cube:
+<script>
+import cadquery as cq
+result = cq.Workplane("XY").box(10, 10, 10)
+</script>
+
+Example 2 - Cylinder with hole:
+<script>
+import cadquery as cq
+result = cq.Workplane("XY").cylinder(20, 10).faces(">Z").hole(5)
+</script>
+
+Example 3 - Box with fillet edges:
+<script>
+import cadquery as cq
+result = cq.Workplane("XY").box(30, 20, 10).edges().fillet(2)
+</script>
+
+Example 4 - L-bracket:
+<script>
+import cadquery as cq
+result = (cq.Workplane("XY")
+    .box(20, 10, 5)
+    .faces(">Y")
+    .workplane()
+    .box(10, 5, 15))
+</script>
+
+Example 5 - Hollow box:
+<script>
+import cadquery as cq
+result = cq.Workplane("XY").box(20, 20, 20).faces(">Z").shell(-2)
+</script>
+
+Now generate CadQuery code for the user's request. Output ONLY <script> tags with valid Python code inside.'''
+
+
+def sanitize_code(code: str) -> str:
+    """
+    Sanitize generated code by removing invalid characters.
+    
+    Removes box-drawing characters, unicode replacement chars, and other
+    non-ASCII characters that aren't valid in Python.
+    """
+    if not code:
+        return code
+    
+    # Remove box-drawing characters (U+2500-U+257F): ┌ ─ ┐ │ └ ┘ etc.
+    code = re.sub(r'[\u2500-\u257F]', '', code)
+    
+    # Remove unicode replacement character
+    code = code.replace('\ufffd', '')
+    
+    # Remove other problematic unicode - keep only ASCII
+    cleaned_chars = []
+    for char in code:
+        if ord(char) < 128:  # ASCII only
+            cleaned_chars.append(char)
+        elif ord(char) in [0x201C, 0x201D]:  # Fancy double quotes
+            cleaned_chars.append('"')
+        elif ord(char) in [0x2018, 0x2019]:  # Fancy single quotes
+            cleaned_chars.append("'")
+        # Skip all other unicode
+    
+    code = ''.join(cleaned_chars)
+    
+    # Remove lines that are just separators or box drawings
+    lines = code.split('\n')
+    valid_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip empty lines and separator-only lines
+        if stripped and not re.match(r'^[\-=_+|/\\*#<>]+$', stripped):
+            valid_lines.append(line)
+    
+    return '\n'.join(valid_lines)
 
 
 def extract_script_from_text(text: str) -> str:
     """Extract the content inside <script>...</script> tags from a string.
 
     Returns an empty string if the tags are missing or malformed.
+    Also sanitizes the extracted code to remove invalid characters.
     """
     start_tag = "<script>"
     end_tag = "</script>"
@@ -25,9 +156,21 @@ def extract_script_from_text(text: str) -> str:
     end_idx = text.find(end_tag, start_idx + len(start_tag)) if start_idx != -1 else -1
 
     if start_idx == -1 or end_idx == -1:
+        # Try to find any Python-like code as fallback
+        # Look for 'import cadquery' pattern
+        if 'import cadquery' in text:
+            # Extract from 'import cadquery' to end or next obvious boundary
+            import_idx = text.find('import cadquery')
+            code_candidate = text[import_idx:]
+            # Cut at common boundaries
+            for boundary in ['</script>', '</think>', '\n\n\n', '```']:
+                if boundary in code_candidate:
+                    code_candidate = code_candidate[:code_candidate.find(boundary)]
+            return sanitize_code(code_candidate.strip())
         return ""
 
-    return text[start_idx + len(start_tag) : end_idx].strip()
+    script = text[start_idx + len(start_tag) : end_idx].strip()
+    return sanitize_code(script)
 
 
 class CADGeneratorModel(nn.Module):
@@ -37,7 +180,7 @@ class CADGeneratorModel(nn.Module):
     """
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-Coder-1.5B",  # Use smaller model to avoid OOM
+        model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",  # Instruct variant for better following instructions
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -139,7 +282,7 @@ class CADGeneratorModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        max_length: int = 32768,
+        max_length: int = 1024,  # max_new_tokens (reduced for faster generation)
         temperature: float = 0.8,
         top_k: int = 50,
         top_p: float = 0.95,
@@ -149,7 +292,7 @@ class CADGeneratorModel(nn.Module):
         outputs = self.model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            max_length=max_length,
+            max_new_tokens=max_length,  # Use max_new_tokens to avoid warning
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
@@ -190,7 +333,7 @@ class PPOCADModel(nn.Module):
     """PPO Model with Policy and Value heads"""
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-Coder-1.5B",  # Use smaller model to avoid OOM
+        model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",  # Instruct variant for better instruction following
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -361,7 +504,7 @@ class PPOCADModel(nn.Module):
 
 class ReferenceModel(nn.Module):
     """Reference model for KL penalty in PPO"""
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-1.5B"):  # Use smaller model to avoid OOM
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"):  # Instruct variant for better instruction following
         super().__init__()
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
