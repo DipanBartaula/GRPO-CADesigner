@@ -15,7 +15,7 @@ class CADInference:
     def __init__(
         self,
         checkpoint_path: Optional[str] = None,
-        model_name: str = 'Qwen/Qwen2.5-Coder-7B',
+        model_name: str = 'Qwen/Qwen2.5-Coder-1.5B',  # Use smaller model to avoid OOM
         device: Optional[torch.device] = None
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")

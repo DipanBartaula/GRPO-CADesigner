@@ -586,7 +586,7 @@ class PPOTrainer:
     """Main training script"""
     # Configuration
     config = {
-        'model_name': 'Qwen/Qwen2.5-Coder-7B',
+        'model_name': 'Qwen/Qwen2.5-Coder-1.5B',  # Use smaller model to avoid OOM
         'use_lora': True,
         'lora_r': 128,
         'lora_alpha': 16,
