@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from typing import Dict, Optional, Tuple
 import torch.nn.functional as F
 
@@ -51,10 +51,16 @@ class CADGeneratorModel(nn.Module):
         # Decoder-only model: use left padding for correct generation behavior
         self.tokenizer.padding_side = "left"
         
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False,
+        )
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
-            device_map=None
+            quantization_config=quant_config,
+            device_map="auto",
         )
         
         # Apply LoRA if enabled
@@ -325,11 +331,18 @@ class ReferenceModel(nn.Module):
     """Reference model for KL penalty in PPO"""
     def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-7B"):
         super().__init__()
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False,
+        )
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
-            device_map=None
+            quantization_config=quant_config,
+            device_map="auto",
         )
+        
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         if self.tokenizer.pad_token is None:
