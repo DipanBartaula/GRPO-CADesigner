@@ -10,9 +10,9 @@ import os
 
 MODEL_CONFIG = {
     # Base model to use
-    # Options: 'Qwen/Qwen2.5-Coder-0.5B' (smallest), 'Qwen/Qwen2.5-Coder-1.5B' (small), 
-    #          'Qwen/Qwen2.5-Coder-3B' (medium), 'Qwen/Qwen2.5-Coder-7B' (large)
-    'model_name': 'Qwen/Qwen2.5-Coder-1.5B',  # Using 1.5B to avoid CUDA OOM
+    # Options: 'Qwen/Qwen2.5-Coder-0.5B-Instruct' (smallest), 'Qwen/Qwen2.5-Coder-1.5B-Instruct' (small), 
+    #          'Qwen/Qwen2.5-Coder-3B-Instruct' (medium), 'Qwen/Qwen2.5-Coder-7B-Instruct' (large)
+    'model_name': 'Qwen/Qwen2.5-Coder-1.5B-Instruct',  # Instruct variant for better instruction following
     
     # LoRA configuration
     'use_lora': True,

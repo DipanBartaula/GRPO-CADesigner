@@ -10,6 +10,30 @@ from multiprocessing import Pool, cpu_count
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import traceback
 import time
+import re
+
+
+# ============================================================================
+# CODE SANITIZATION (duplicate here for multiprocessing - workers can't import from model.py easily)
+# ============================================================================
+
+def _sanitize_code(code: str) -> str:
+    """Remove invalid unicode characters that break Python execution."""
+    if not code:
+        return code
+    
+    # Keep only ASCII characters (and convert fancy quotes)
+    cleaned_chars = []
+    for char in code:
+        if ord(char) < 128:  # ASCII only
+            cleaned_chars.append(char)
+        elif ord(char) in [0x201C, 0x201D]:  # Fancy double quotes → "
+            cleaned_chars.append('"')
+        elif ord(char) in [0x2018, 0x2019]:  # Fancy single quotes → '
+            cleaned_chars.append("'")
+        # Skip all other unicode (box-drawing, replacement chars, Arabic, etc.)
+    
+    return ''.join(cleaned_chars)
 
 
 # ============================================================================
@@ -27,6 +51,9 @@ def _worker_check_compilation(args: Tuple[int, str, float, float]) -> Tuple[int,
         (index, reward, debug_message)
     """
     idx, code, success_reward, failure_penalty = args
+    
+    # Sanitize code to remove invalid unicode
+    code = _sanitize_code(code)
     
     if not code or not code.strip():
         return idx, failure_penalty, "EMPTY CODE"
@@ -53,6 +80,9 @@ def _worker_execute_and_mesh(args: Tuple[int, str, float, float, int]) -> Tuple[
         (index, reward, serialized_mesh_bytes or None, debug_message)
     """
     idx, code, success_reward, failure_penalty, timeout_seconds = args
+    
+    # Sanitize code to remove invalid unicode
+    code = _sanitize_code(code)
     
     if not code or not code.strip():
         return idx, failure_penalty, None, "EMPTY CODE"

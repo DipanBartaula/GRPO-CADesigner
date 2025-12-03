@@ -1,10 +1,13 @@
+import os
+# Disable tokenizer parallelism to avoid deadlocks with multiprocessing
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 import wandb
-import os
 import time
 from typing import Dict, List
 import numpy as np
@@ -586,7 +589,7 @@ class PPOTrainer:
     """Main training script"""
     # Configuration
     config = {
-        'model_name': 'Qwen/Qwen2.5-Coder-1.5B',  # Use smaller model to avoid OOM
+        'model_name': 'Qwen/Qwen2.5-Coder-1.5B-Instruct',  # Instruct variant for better instruction following
         'use_lora': True,
         'lora_r': 128,
         'lora_alpha': 16,
