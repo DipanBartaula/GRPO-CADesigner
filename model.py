@@ -138,13 +138,13 @@ class CADGeneratorModel(nn.Module):
 
 class ValueHead(nn.Module):
     """Value head for PPO"""
-    def __init__(self, hidden_size: int):
+    def __init__(self, hidden_size: int, dtype=torch.float16):
         super().__init__()
         self.value_head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, hidden_size).to(dtype),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(hidden_size, 1).to(dtype)
         )
     
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -174,7 +174,7 @@ class PPOCADModel(nn.Module):
             lora_dropout=lora_dropout
         )
         
-        self.value_head = ValueHead(self.generator.hidden_size)
+        self.value_head = ValueHead(self.generator.hidden_size, dtype=torch.float16)
         
         self.tokenizer = self.generator.tokenizer
 
