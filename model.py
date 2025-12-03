@@ -37,11 +37,14 @@ class CADGeneratorModel(nn.Module):
     """
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-Coder-7B",
+        model_name: str = "Qwen/Qwen2.5-Coder-1.5B",  # Use smaller model to avoid OOM
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
-        lora_dropout: float = 0.1
+        lora_dropout: float = 0.1,
+        use_gradient_checkpointing: bool = True,  # Memory optimization
+        load_in_8bit: bool = False,  # Quantization for memory savings
+        load_in_4bit: bool = False,  # More aggressive quantization
     ):
         super().__init__()
         
@@ -51,11 +54,40 @@ class CADGeneratorModel(nn.Module):
         # Decoder-only model: use left padding for correct generation behavior
         self.tokenizer.padding_side = "left"
         
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float32,  # Load Qwen model in FP32
-            device_map=None
-        )
+        # Configure model loading based on memory optimization settings
+        load_kwargs = {
+            "torch_dtype": torch.float16 if (load_in_8bit or load_in_4bit) else torch.float32,
+            "device_map": "auto" if (load_in_8bit or load_in_4bit) else None,
+        }
+        
+        # Add quantization config if requested
+        if load_in_8bit:
+            try:
+                from transformers import BitsAndBytesConfig
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+                print(f"[CADGeneratorModel] Loading model in 8-bit quantization")
+            except ImportError:
+                print(f"[CADGeneratorModel] Warning: bitsandbytes not installed, loading in FP32")
+        elif load_in_4bit:
+            try:
+                from transformers import BitsAndBytesConfig
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+                print(f"[CADGeneratorModel] Loading model in 4-bit quantization")
+            except ImportError:
+                print(f"[CADGeneratorModel] Warning: bitsandbytes not installed, loading in FP32")
+        
+        print(f"[CADGeneratorModel] Loading {model_name}...")
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        
+        # Enable gradient checkpointing for memory optimization
+        if use_gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
+            print(f"[CADGeneratorModel] Gradient checkpointing enabled")
         
         # Apply LoRA if enabled
         if use_lora:
@@ -158,11 +190,14 @@ class PPOCADModel(nn.Module):
     """PPO Model with Policy and Value heads"""
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-Coder-7B",
+        model_name: str = "Qwen/Qwen2.5-Coder-1.5B",  # Use smaller model to avoid OOM
         use_lora: bool = True,
         lora_r: int = 8,
         lora_alpha: int = 16,
-        lora_dropout: float = 0.1
+        lora_dropout: float = 0.1,
+        use_gradient_checkpointing: bool = True,  # Memory optimization
+        load_in_8bit: bool = False,  # Quantization for memory savings
+        load_in_4bit: bool = False,  # More aggressive quantization
     ):
         super().__init__()
         
@@ -171,7 +206,10 @@ class PPOCADModel(nn.Module):
             use_lora=use_lora,
             lora_r=lora_r,
             lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout
+            lora_dropout=lora_dropout,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            load_in_8bit=load_in_8bit,
+            load_in_4bit=load_in_4bit,
         )
         
         self.value_head = ValueHead(self.generator.hidden_size, dtype=torch.float32)
@@ -323,7 +361,7 @@ class PPOCADModel(nn.Module):
 
 class ReferenceModel(nn.Module):
     """Reference model for KL penalty in PPO"""
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-7B"):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-Coder-1.5B"):  # Use smaller model to avoid OOM
         super().__init__()
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
