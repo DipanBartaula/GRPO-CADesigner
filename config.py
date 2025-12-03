@@ -120,6 +120,18 @@ MESH_CONFIG = {
 }
 
 # ============================================================================
+# MULTIPROCESSING CONFIGURATION
+# ============================================================================
+
+MULTIPROCESSING_CONFIG = {
+    'use_multiprocessing': True,  # Enable/disable multiprocessing for reward computation
+    'num_workers': None,          # Number of worker processes (None = cpu_count - 1)
+    'compilation_timeout': 10,    # Timeout for compilation check (seconds)
+    'execution_timeout': 30,      # Timeout for code execution & mesh generation (seconds)
+    'feature_timeout': 30,        # Timeout for point cloud & CAD feature extraction (seconds)
+}
+
+# ============================================================================
 # WANDB CONFIGURATION
 # ============================================================================
 
