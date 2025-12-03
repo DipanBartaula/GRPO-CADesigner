@@ -53,7 +53,7 @@ class CADGeneratorModel(nn.Module):
         
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,  # Load Qwen model in FP32
             device_map=None
         )
         
@@ -138,7 +138,7 @@ class CADGeneratorModel(nn.Module):
 
 class ValueHead(nn.Module):
     """Value head for PPO"""
-    def __init__(self, hidden_size: int, dtype=torch.float16):
+    def __init__(self, hidden_size: int, dtype=torch.float32):  
         super().__init__()
         self.value_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size).to(dtype),
@@ -174,7 +174,7 @@ class PPOCADModel(nn.Module):
             lora_dropout=lora_dropout
         )
         
-        self.value_head = ValueHead(self.generator.hidden_size, dtype=torch.float16)
+        self.value_head = ValueHead(self.generator.hidden_size, dtype=torch.float32)
         
         self.tokenizer = self.generator.tokenizer
 
@@ -327,7 +327,7 @@ class ReferenceModel(nn.Module):
         super().__init__()
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,  # Load Qwen model in FP32
             device_map=None
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)

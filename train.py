@@ -57,8 +57,9 @@ class PPOTrainer:
         self.checkpoint_dir = config.get('checkpoint_dir', 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Mixed-precision training (only when CUDA is available)
-        self.use_amp = torch.cuda.is_available()
+        # Mixed-precision training - use FP32 for main models, FP16 for reward models
+        # Disable AMP since main models are FP32, but reward models are FP16
+        self.use_amp = False  # Disable AMP as main models are FP32
         self.scaler = GradScaler(enabled=self.use_amp)
     
     def train(
@@ -77,6 +78,8 @@ class PPOTrainer:
         print(f"{'='*60}")
         print(f"Device: {self.device}")
         print(f"Using AMP: {self.use_amp}")
+        print(f"Main models (Qwen): FP32")
+        print(f"Reward models: FP16")
         print(f"Batch size: {self.config.get('batch_size', 'unknown')}")
         print(f"Max iterations: {self.max_iterations}")
         print(f"Learning rate: {self.config.get('learning_rate', 'unknown')}")
